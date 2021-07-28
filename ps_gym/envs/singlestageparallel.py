@@ -135,6 +135,7 @@ class SingleStageParallelMaster(gym.Env):
         self.allocation             = 'makespan'                                                            # reward definition
         self.shipping               = False                                                                 # if shipping from product from state inventory
         self.round2nearest          = False                                                                 # if rounding control to nearest allowables
+        self.maintenance            = True
 
         # constraints 
         self.A, self.B 	= np.diag([1]*self.N), np.ones(self.N).reshape(-1,1)
@@ -156,17 +157,22 @@ class SingleStageParallelMaster(gym.Env):
                                     5:betabinom,
                                     6:bernoulli,
                                     7:self.user_D1, 8: self.user_D2, 9: self.user_D3}
+        
         # defining parameters of default distributions
-        breakdown_temp      = [1/35, 1/45, 1/20, 1/35]                                  # inverse of mean number of days between unit breakdowns
-        self.maintenance_t  = [1, 1, 1, 1]                                              # maintenance time for unit breakdown in days, note this could be defined probabilistically, but defined deterministically here
-        dist_p = {i: {} for i in units}
-        for i in units:
-            for k in self.products:
-                if p_t[i][k]:
-                    dist_p[i][k] = [max(0.5/self.dt,(p_t[i][k] -self.dt)/self.dt), (p_t[i][k] + self.dt)/self.dt]
+        # maintenance 
+        self.breakdown_temp     = [1/100, 1/70, 1/80, 1/55]                          # inverse of mean number of days between unit breakdowns
+        self.maintenance_t      = [1, 1, 1, 1]                                      # maintenance time for unit breakdown in days, note this could be defined probabilistically, but defined deterministically here
+        # processing time 
+        self.dist_p     = {i: {} for i in units}                                    # empty dictionary for unit order specific variability
+        self.min_var_p  = -1                                                        # lower bound of uniform processing time variation (periods from the mean)
+        self.max_var_p  = 1                                                         # upper bound of uniform processing time variation (periods from the mean)
 
-        self.dist_pt        = [3, dist_p]                                                           # selecting discrete distribution for processing times and setting params - see for user defined options (https://doi.org/10.1016/S0098-1354(01)00735-9)
-        self.dist_ubd       = [6, {i:{'p':1-np.exp(-breakdown_temp[i]*self.dt)} for i in units}]    # selecting distribution for unit breakdown (typically bernouilli https://doi.org/10.1016/j.compchemeng.2019.106670) and setting params
+        for i in units:
+            for k in ops[i]:
+                    self.dist_p[i][k] = [-1, 1]
+
+        self.dist_pt        = [3, self.dist_p]                                                           # selecting discrete distribution for processing times and setting params - see for user defined options (https://doi.org/10.1016/S0098-1354(01)00735-9)
+        self.dist_ubd       = [6, {i:{'p':1-np.exp(-self.breakdown_temp[i]*self.dt)} for i in units}]    # selecting distribution for unit breakdown (typically bernouilli https://doi.org/10.1016/j.compchemeng.2019.106670) and setting params
         self.dist_dmd       = [1, {i:{'mu':int(k)} for i,k in zip(self.products, orders)}]          # selecting distribution for demand (in DOI:10.1021/ie0007724 uniform is selected but, typically it seems to be poisson)  and setting params - here demand will 
 
         # implement control masking?
@@ -335,8 +341,8 @@ class SingleStageParallelMaster(gym.Env):
 
         c_time_o1   = [False, False, False, False, False, 0.5, False, False, 1.0, 0.5]              # listing cleaning time between end of production of order 1 and next successor (index in list)
         c_time_o2   = [False, False, 1.0, False, False, False, False, False, False, False]          # listing cleaning time between end of production of order 2 and next successor (index in list)
-        c_time_o3   = [1.0, False, False, False, False, False, 0.50, False, 1.5, False]             # listing cleaning time between end of production of order 3 and next successor (index in list)
-        c_time_o4   = [False, False, False, False, False, False, False, False, False, 0.5]          # listing cleaning time between end of production of order 4 and next successor (index in list)
+        c_time_o3   = [1.0, 0.5, False, False, False, False, 0.50, False, 1.5, False]             # listing cleaning time between end of production of order 3 and next successor (index in list)
+        c_time_o4   = [False, False, False, False, 0.5, False, False, False, False, 0.5]          # listing cleaning time between end of production of order 4 and next successor (index in list)
         c_time_o5   = [False, False, False, 0.5, False, 0.5, 1.0, 0.5, False, False]                # listing cleaning time between end of production of order 5 and next successor (index in list)
         c_time_o6   = [1.5, False, 0.5, 0.5, False, False, False, False, 1.0, False]                # listing cleaning time between end of production of order 6 and next successor (index in list)
         c_time_o7   = [False, 2.0, False, False, 1.0, False, False, 0.5, False, False]              # listing cleaning time between end of production of order 7 and next successor (index in list)
@@ -390,12 +396,13 @@ class SingleStageParallelMaster(gym.Env):
         self.F=np.zeros([periods+1, m])                     # demand for product fulfilled when?
         self.C=np.zeros([periods+1, m])                     # no of discrete time indices until order fulfilled.
         self.R=np.zeros([periods+1, m])                     # tardy or not? How many periods late are we?
+        self.r_hist = np.zeros([periods+1])
         self.action_log     = np.zeros((periods+1, u))      # what operation is unit n performing (0-self.N-1 production, self.N idle)
         self.time_to_compl  = np.zeros((periods+1, u))      # how long until a given operation in a given unit is complete (in periods) - 0 means available now  
         self.time_processed = np.zeros((periods+1, u))      # time an operation has been processed for.
         self.outstanding_os = [i for i in range(m)]         # container to track outstanding operations
         self.most_recent_op = {}
-        self.op_processing  = np.zeros((periods+1, u))
+        self.op_processing  = np.zeros((periods+1, u))      # container to track at what period an order was being processed in a given unit
         for unit in range(u):
             self.most_recent_op[unit] = [np.inf, 0]
         # initialization
@@ -491,9 +498,10 @@ class SingleStageParallelMaster(gym.Env):
                         _, process_p[i], p_t = self._operational_time_left(i, control[i], c_length[i], [control_log[i], 0])   # finding number of periods to schedule for based on
 
                     self.new_ops[i] = control[i]
-                    
+                   
+
                     # make scheduling decision for remaining periods and pencil in countdown for future time periods.
-                    
+                  
                     for j in range(process_p[i]):
                         
                         if n+j <= self.num_periods:
@@ -524,7 +532,7 @@ class SingleStageParallelMaster(gym.Env):
                     
 
             # updating periods operation has been in processing (really a lazy way to do this) across all units
-            if n < self.num_periods: self.time_processed[n+1, i] += 1 + self.time_processed[n, i]
+            if n < self.num_periods: self.time_processed[n+1, i] += 1 + self.time_processed[n, i]                       # index n+1 previously = 0
 
         return     
 
@@ -565,12 +573,17 @@ class SingleStageParallelMaster(gym.Env):
             c_t = 0       # assume no cleaning time required at the start of horzion i.e. no cleaning for first operation scheduled
         
         # finding processing time 
-        if self.stochasticity: p_tb = self.distributions[dist_pt[0]].rvs(*dist_pt[1][unit_index][order_index]) * self.dt
-        if not self.stochasticity: p_tb = process_time[unit_index][order_index]
+        p_tb = process_time[unit_index][order_index]
         p_t = campaigns * p_tb
+        # adding stochasticity 
+        if self.stochasticity: p_t += self.distributions[dist_pt[0]].rvs(*dist_pt[1][unit_index][order_index]) *self.dt
+
+       
         
         total_lead_time = p_t + max(max(rto,c_t), rte)                         
         lead_periods    = math.ceil(total_lead_time/self.dt)
+
+        
 
         return [total_lead_time, lead_periods, lead_periods - math.ceil(max(max(rto,c_t), rte)/self.dt)]
 
@@ -685,8 +698,7 @@ class SingleStageParallelMaster(gym.Env):
         controlset  = {}                                    # holder
         os          = self.outstanding_os.copy()
         recent_op   = self.most_recent_op
-        dist_ubd    = self.dist_ubd
-        m_t         = self.maintenance_t
+
 
         if n == 0: 
             for i in range(n_units):
@@ -724,26 +736,68 @@ class SingleStageParallelMaster(gym.Env):
                 elif i not in completedops.keys():
                   
                     controlset[i]   = [control_log[i]]                                              # if unit has not completed the operation, then the only possible choice is to continue with that operation
-
-                # assess unit breakdown
-                if self.stochasticity:
-                    if self.distributions[dist_ubd[0]].rvs(**dist_ubd[1][i]) == 1:
-                        controlset[i] = [self.N+1]                                                      # declaring maintenance period 
-                        mt            = math.ceil(m_t[i]/self.dt)
-                        for j in range(mt):
-                            if n+j <= self.num_periods:
-                                    self.action_log[n+j, i]     = int(self.N+1)                # scheduling 
-                                    self.time_to_compl[n+j,i]   = mt - j          # estimating operational period (might be good practice, might not be.. )
-                                    if (mt - j) <= math.ceil(m_t[i]/self.dt): 
-                                         self.op_processing[n+j, i] = 1 * (self.N+2) 
-                                    else:
-                                        self.op_processing[n+j, i] = -1 * (self.N+2)
                     
 
         self.control_set = controlset
 
         
         return controlset
+
+    def _schedule_maintenance(self, control_set):
+        """ 
+        implement maintenace period by clearing current operation and forcing unit to play
+        maintenance
+        """
+
+        dist_ubd    = self.dist_ubd                         # distribution describing probability of unit breakdown
+        m_t         = self.maintenance_t                    # required maintenance period for each unit
+        n_units     = self.n_units                          # number of units available 
+        controlset  = control_set
+        deterbkd    = self.breakdown_temp
+        n           = self.period
+        # assess unit breakdown
+        
+        for i in range(n_units):
+
+            if self.stochasticity:
+                if self.distributions[dist_ubd[0]].rvs(**dist_ubd[1][i]) == 1:
+                    controlset[i] = [self.N+1]                                                  # declaring maintenance period 
+                    mt            = math.ceil(m_t[i]/self.dt)
+                    indi          = np.where(self.time_to_compl[n:,i] > 0)[0] + n
+                    if indi.shape[0] >0:
+                        self.time_to_compl[indi,i] = np.zeros(len(indi))#.reshape(-1,1)
+                        self.op_processing[indi,i] = np.zeros(len(indi))#.reshape(-1,1)
+                    for j in range(mt):
+                        if n+j <= self.num_periods:
+                                self.action_log[n+j, i]     = int(self.N+1)                     # scheduling 
+                                self.time_to_compl[n+j,i]   = mt - j                            # estimating operational period (might be good practice, might not be.. )
+                                if (mt - j) <= math.ceil(m_t[i]/self.dt): 
+                                        self.op_processing[n+j, i] = 1 * (self.N+2) 
+                                else:
+                                    self.op_processing[n+j, i] = -1 * (self.N+2)
+            if not self.stochasticity:
+                if int(1/deterbkd[i]) == int(n):
+                    controlset[i] = [self.N+1]                                                  # declaring maintenance period 
+                    mt            = math.ceil(m_t[i]/self.dt)
+                    indi          = np.where(self.time_to_compl[n:,i] > 0)[0] + n
+                    if indi.shape[0] >0:
+                        self.time_to_compl[indi,i] = np.zeros(len(indi))#.reshape(-1,1)
+                        self.op_processing[indi,i] = np.zeros(len(indi))#.reshape(-1,1)
+                    for j in range(mt):
+                        if n+j <= self.num_periods:
+                                self.action_log[n+j, i]     = int(self.N+1)                     # scheduling 
+                                self.time_to_compl[n+j,i]   = mt - j                            # estimating operational period (might be good practice, might not be.. )
+                                if (mt - j) <= math.ceil(m_t[i]/self.dt): 
+                                        self.op_processing[n+j, i] = 1 * (self.N+2) 
+                                else:
+                                    self.op_processing[n+j, i] = -1 * (self.N+2)
+
+
+            self.control_set = controlset
+
+        return controlset
+
+
 
     def _check_constraint_set(self, t, x, u):
         """ 
@@ -791,6 +845,9 @@ class SingleStageParallelMaster(gym.Env):
 
         if self.allocation == 'makespan': reward = np.sum(R[n,:].squeeze()).squeeze() + self.time_cost
 
+
+        self.r_hist[n-1] = reward
+
         return reward
             
     def _STEP(self, control):
@@ -834,6 +891,8 @@ class SingleStageParallelMaster(gym.Env):
         # need to implement dynamic restriction of states
         if self.dynamic_restrict_control: controlset = self._dynamic_restrict_control(comp_ops)
         if not self.dynamic_restrict_control: controlset = {} 
+
+        if self.maintenance: controlset  = self._schedule_maintenance(controlset)
 
         # update state
         self._update_state()
@@ -891,26 +950,31 @@ class SingleStageParallelMaster(gym.Env):
         op_pro  = self.op_processing
         control = self.action_log
 
+
+
         schedule = {unit: [] for unit in units}
         
         for unit in units:
+
             x_  = control[0,unit]
             j   = 0
             gby = self.runs_of_ones_list(unit)
-            print('bits up', gby)
+
             gby = [item for item in gby if item > 0]
-            print('bitsp', gby)
-            for i in range(n):
+
+            for i in range(n+1):
                 x = control[i, unit]
                 if (x != x_) & (x_!=self.N):
-                    print(x_)
-                    schedule[unit].append([x_+1, i-(gby[j])/(x_+1), i])
+                    
+                    try: schedule[unit].append([x_+1, i-(gby[j])/(x_+1), i])
+                    except: print('please check schedule for ', unit, 'there may be error in schedule figure generation:', 
+                                  'plotted schedule', schedule, 'controls taken', control[unit], 'op_processing', self.op_processing, 'time index', i)
                     j +=1
                 x_ = x.copy()
 
         schedule = {unit: np.array(schedule[unit]) for unit in units}
             
-        print(schedule)
+
        
 
         plt.figure(figsize=(12,6))
@@ -930,7 +994,7 @@ class SingleStageParallelMaster(gym.Env):
                 plt.plot([0,n],[idx,idx],lw=25,alpha=.01,color='y')
             #x = 0
             u_control = schedule[unit]
-            print(u_control.shape)
+
             
             for op in range(u_control.shape[0]):
                 #x +=1
@@ -946,12 +1010,19 @@ class SingleStageParallelMaster(gym.Env):
         plt.gca().set_yticklabels(lbls);
         plt.xlabel('Discrete Time Index')
         plt.savefig(path+'.svg')
+        plt.show()
+        # check lateness
+
+        R = self.R
+
 
         return
         
 class SingleStageParallelSO1(SingleStageParallelMaster):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
+        """ remove the use of logic """
 
         self.dynamic_restrict_control = False
 
