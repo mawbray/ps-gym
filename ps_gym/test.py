@@ -11,19 +11,8 @@ import numpy as np
 import gym
 import matplotlib.pyplot as plt
 from envs.singlestageparallel import *
-#from env.experiment_definitions import *
 
 
-
-def set_process_times1():
-
-    process_time_e1         = [0.5, 0.5, False, False, 1.0, False, False, False, False, False]             # listing processing time of each product in unit 1
-    process_time_e2         = [False, False, 0.5, 1.0, False, False, 0.5, False, False, False]            # listing processing time of each product in unit 2
-    process_time_e3         = [False, False, False, False, False, 1.0, 0.5, 0.5, False, False]         # listing processing time of each product in unit 3
-    process_time_e4         = [False, False, False, 1.0, False, 0.5, False, 1.0, False, False]        # listing processing time of each product in unit 4
-    p_t                     = [process_time_e1, process_time_e2, process_time_e3, process_time_e4]      # collating all processing times for dictionary generation 
-
-    return p_t
 
 
 class TestEnv:
@@ -34,18 +23,8 @@ class TestEnv:
         
 
     def _build_env(self, env_name):
-
-        units       = [i for i in range(4)]
-                 # get processing times 
-        p_t             = set_process_times1()                                                  # retreving process times for each order in each unit
-        procs_time_dict = {key: value for key, value in zip(units, p_t)}                        # generating dictionary of processing of products in each unit
-        """gym.envs.register(
-                            id=env_name,
-                            entry_point='envs.singlestageparallel:SingleStageParallelMaster')
-                            #max_episode_steps=150
-                            #kwargs={'size' : 1, 'init_state' : 10., 'state_bound' : np.inf},)
-        """
-        env = gym.make(env_name, env_config =  {} )
+        
+        env = gym.make(env_name, env_config =  {} )         # env_config is a dictionary which takes environment attributes as keys and corresponding settings as values
         return env
 
     def test_make(self, config):
@@ -92,9 +71,7 @@ class TestEnv:
                 #assert (env.observation_space.contains(state), 
                  #   f"State out of range of observation space: {state}")
                 action = env.sample_action()
-                print('control', np.array([8,8,8,8]))
-                state, reward, done, info = env.step(np.array([8,8,8,8]))  #action
-                print('processing', env.op_processing[t])
+                state, reward, done, info = env.step(action)  #action
                 r+=reward
                 t+=1
                 rewards.append(reward), states.append(state), controls.append(action), termin.append(done)
