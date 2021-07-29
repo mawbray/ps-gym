@@ -4,7 +4,6 @@ Max Mowbray
 19/5/2020
 '''
 import sys
-#sys.path.append(r'C:\Users\g41606mm\Dropbox\Projects\Python\RL\Scheduling\OR-gym\env\model_builder\production_scheduling\envs')
 import gym
 import itertools
 import numpy as np
