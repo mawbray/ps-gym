@@ -9,11 +9,11 @@ The main idea of ps-gym is the identification of nonlinear transformations of th
 
 If downloading the github repository:
 
-'''
+```
 git clone https://github.com/mawbray/ps-gym.git
 cd ps-gym 
 pip install -e.
-'''
+```
 
 Will enable pip install in future
 
