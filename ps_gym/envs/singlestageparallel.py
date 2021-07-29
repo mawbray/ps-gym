@@ -57,10 +57,7 @@ class SingleStageParallelMaster(gym.Env):
     11. Due to limited storage capacity, new shippings of raw materials may be received during the scheduling period. 
         Limitations on the availability of raw materials, utilities, or manpower may prevent one from using some otherwise feasible production schedules
 	
-    12. Resource constraints related to raw material availability, limited manpower, or maintenance periods will indeed be considered in {enterCS name}
-
-
-
+    12. Resource constraints related to raw material availability, limited manpower, or maintenance periods will indeed be considered in {tbc}
 
         
     '''
@@ -70,19 +67,16 @@ class SingleStageParallelMaster(gym.Env):
         I0 = [non-negative integer; dimension |Products|] initial inventories for each product.
         te = [non-negative integer; dimension |Products|] delivery date for each order/product.
         r = [non-negative float; dimension |Products|]  cost for tardiness of product.
-        L = [non-negative integer; dimension |Stages|-1] lead times in between stages.
+   
         dist = [integer] value between 1 and 6. Specifies distribution for customer demand.
-            1: poisson distribution
-            2: binomial distribution
-            3: uniform random integer
-            4: geometric distribution
-            5: betabinom distribution
-            6: user supplied demand values
-        dist_param = [dictionary] named values for parameters fed to statistical distribution.
-            poisson: {'mu': <mean value>}
-            binom: {'n': <mean value>, 'p': <probability between 0 and 1 of getting the mean value>}
-            raindint: {'low' = <lower bound>, 'high': <upper bound>}
-            geom: {'p': <probability. Outcome is the number of trials to success>}
+            1:poisson,
+	    2:binom,
+	    3:randint,
+	    4:geom,
+	    5:betabinom,
+	    6:bernoulli,
+	    7-9: User defined	    
+        All distributions are specified by their arguments. see scipy for more information.
         seed_int = [integer] seed for random state.
         '''
         # set default (arbitrary) values when creating environment (if no args or kwargs are given)                                                                   
@@ -371,16 +365,7 @@ class SingleStageParallelMaster(gym.Env):
         
     def _RESET(self):
         '''
-        Create and initialize all variables and containers.
-        Nomenclature:
-            I = On hand inventory at the start of each period at each stage (except last one).
-            T = Pipeline inventory/i.e. that which is in production currently
-            R = Replenishment order placed at each period at each stage (except last one).
-            D = Customer demand at each period (at the retailer)
-            S = Sales performed at each period at each stage.
-            B = Backlog at each period at each stage.
-            LS = Lost sales at each period at each stage.
-            P = Total profit at each stage.
+    	Reset environment after each episode
         '''
         periods = self.num_periods
         m       = self.N
