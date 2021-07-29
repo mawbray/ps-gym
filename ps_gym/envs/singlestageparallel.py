@@ -127,8 +127,8 @@ class SingleStageParallelMaster(gym.Env):
         self.idle_option            = True                                                                  # provide control option to idle the unit
         self.allocation             = 'makespan'                                                            # reward definition
         self.shipping               = False                                                                 # if shipping from product from state inventory
-        self.round2nearest          = False                                                                 # if rounding control to nearest allowables
-        self.maintenance            = True
+        self.round2nearest          = True                                                                  # if rounding control to nearest allowables
+        self.maintenance            = False
 
         # constraints 
         self.A, self.B 	= np.diag([1]*self.N), np.ones(self.N).reshape(-1,1)
@@ -141,7 +141,7 @@ class SingleStageParallelMaster(gym.Env):
 
         #  defining types of stohasticity 
         #  dictionary with options for distributions
-        self.stochasticity  = True
+        self.stochasticity  = False
         self.user_D1, self.user_D2, self.user_D3 = np.zeros(self.periods), np.zeros(self.periods), np.zeros(self.periods)
         self.distributions       = {1:poisson,
                                     2:binom,
