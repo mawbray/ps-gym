@@ -4,6 +4,7 @@ Max Mowbray
 19/5/2020
 '''
 import sys
+#sys.path.append(r'C:\Users\g41606mm\Dropbox\Projects\Python\RL\Scheduling\OR-gym\env\model_builder\production_scheduling\envs')
 import gym
 import itertools
 import numpy as np
@@ -56,11 +57,14 @@ class SingleStageParallelMaster(gym.Env):
     11. Due to limited storage capacity, new shippings of raw materials may be received during the scheduling period. 
         Limitations on the availability of raw materials, utilities, or manpower may prevent one from using some otherwise feasible production schedules
 	
-    12. Resource constraints related to raw material availability, limited manpower, or maintenance periods will indeed be considered in {tbc}
+    12. Resource constraints related to raw material availability, limited manpower, or maintenance periods will indeed be considered in {enterCS name}
+
+
+    '''
 
         
-    '''
     def __init__(self, *args, **kwargs):
+
         '''
         periods = [positive integer] number of periods in simulation. --> length of horizon / gcf of all processing times 
         I0 = [non-negative integer; dimension |Products|] initial inventories for each product.
@@ -111,37 +115,26 @@ class SingleStageParallelMaster(gym.Env):
         self.dt                 = 0.5                                                                       # gcf of all processing times and cleaning times
         self.periods            = math.ceil(100/self.dt)   -1                                 # number of periods required i.e. time horizon given                        
        
-        # selection of case study
-        if self.studytype == 'ex1': self.N = 8
-        if self.studytype == 'ex2': self.N = 9
-        if self.studytype == 'ex3': self.N = 10
-        assert self.studytype in ['ex1','ex2','ex3'], 'studytype must be either "ex1", "ex2" or "ex3"'
-
-        # get order sizes
-        orders                  = self.set_order_size(self.studytype)
-        self.order_size_dict    = {key: value for key, value in zip(self.products, orders)}
-
-        # work up definitions                                                                               
-        self.I0                     = [0 for _ in range(self.N)]                                            # initial inventory of products      
+        # work up definitions 
+        self.I_0                    = [0 for _ in range(10)]                                                                              
         self.finite_release_times   = False                                                                 # include finite release times or not?
         self.idle_option            = True                                                                  # provide control option to idle the unit
         self.allocation             = 'makespan'                                                            # reward definition
         self.shipping               = False                                                                 # if shipping from product from state inventory
         self.round2nearest          = True                                                                  # if rounding control to nearest allowables
         self.maintenance            = False
+        self.rolling_horizon        = True
 
-        # constraints 
-        self.A, self.B 	= np.diag([1]*self.N), np.ones(self.N).reshape(-1,1)
-        self.ng 	    = self.B.shape[0]
-        self.g 		    = lambda x: self.A@x - self.B 			                                                # definition of linear constraints - x must be shape (nx,1) 
-        self.g_terminal = [False]*self.ng
+        # constraints definitions
         self.g_in_R     = False
         self.pf         = 20
         self.g_p_fn     = 2
 
         #  defining types of stohasticity 
         #  dictionary with options for distributions
-        self.stochasticity  = False
+        self.due_date_stochasticity     = False
+        self.maintenance_stochasticity  = False
+        self.processing_stochasticity   = False
         self.user_D1, self.user_D2, self.user_D3 = np.zeros(self.periods), np.zeros(self.periods), np.zeros(self.periods)
         self.distributions       = {1:poisson,
                                     2:binom,
@@ -153,34 +146,59 @@ class SingleStageParallelMaster(gym.Env):
         
         # defining parameters of default distributions
         # maintenance 
-        self.breakdown_temp     = [1/100, 1/70, 1/80, 1/55]                          # inverse of mean number of days between unit breakdowns
+        self.breakdown_temp     = [1/20, 1/70, 1/80, 1/55]                          # inverse of mean number of days between unit breakdowns
         self.maintenance_t      = [1, 1, 1, 1]                                      # maintenance time for unit breakdown in days, note this could be defined probabilistically, but defined deterministically here
+        self.dist_ubd           = {i:{'p':1-np.exp(-self.breakdown_temp[i]*self.dt)} for i in units}
+        self.dist_ubdk          = 6
         # processing time 
         self.dist_p     = {i: {} for i in units}                                    # empty dictionary for unit order specific variability
         self.min_var_p  = -1                                                        # lower bound of uniform processing time variation (periods from the mean)
-        self.max_var_p  = 1                                                         # upper bound of uniform processing time variation (periods from the mean)
-
+        self.max_var_p  = 2                                                        # upper bound of uniform processing time variation (periods from the mean)
+        self.dist_ptk   = 3
         for i in units:
             for k in ops[i]:
-                    self.dist_p[i][k] = [-1, 1]
-
-        self.dist_pt        = [3, self.dist_p]                                                           # selecting discrete distribution for processing times and setting params - see for user defined options (https://doi.org/10.1016/S0098-1354(01)00735-9)
-        self.dist_ubd       = [6, {i:{'p':1-np.exp(-self.breakdown_temp[i]*self.dt)} for i in units}]    # selecting distribution for unit breakdown (typically bernouilli https://doi.org/10.1016/j.compchemeng.2019.106670) and setting params
-        self.dist_dmd       = [1, {i:{'mu':int(k)} for i,k in zip(self.products, orders)}]          # selecting distribution for demand (in DOI:10.1021/ie0007724 uniform is selected but, typically it seems to be poisson)  and setting params - here demand will 
-
+                    self.dist_p[i][k] = [self.min_var_p, self.max_var_p]
+        
         # implement control masking?
         self.dynamic_restrict_control = True
 
         # Defining elements of reward strucutre
         self.time_cost  = -1
         self.tardy_cost = -1
+
+        # notice period for due dates (in discrete time indices)
+        self.notice_period = 2 
                           
         # add environment configuration dictionary and keyword arguments
         assign_env_config(self, kwargs)
 
+        # selection of case study
+        if self.studytype == 'ex1': self.N = 8
+        if self.studytype == 'ex2': self.N = 9
+        if self.studytype == 'ex3': self.N = 10
+        assert self.studytype in ['ex1','ex2','ex3'], 'studytype must be either "ex1", "ex2" or "ex3"'
+
         if self.finite_release_times:
-            self.RTO = self.RTO(self.studytype)
-            self.RTE = self.RTE()    
+            self.RTO = self.RTO_fn(self.studytype)
+            self.RTE = self.RTE_fn()    
+
+        # constraints 
+        self.A, self.B 	= np.diag([1]*self.N), np.ones(self.N).reshape(-1,1)
+        self.ng 	    = self.B.shape[0]
+        self.g 		    = lambda x: self.A@x - self.B 			                                                # definition of linear constraints - x must be shape (nx,1) 
+        self.g_terminal = [False]*self.ng
+
+        # get order sizes
+        orders                  = self.set_order_size(self.studytype)
+        self.order_size_dict    = {key: value for key, value in zip(self.products, orders)}
+
+        # demand and definitions of distribtuions objects.
+        self.dist_ddk = 1
+        self.dist_ddd = {i:{'mu':int(k)} for i,k in zip(self.products, self.due_dates)}            # constrained to be poisson 
+
+        self.dist_pt        = [self.dist_ptk, self.dist_p]                                                          # selecting discrete distribution for processing times and setting params - see for user defined options (https://doi.org/10.1016/S0098-1354(01)00735-9)
+        self.dist_ubd       = [self.dist_ubdk, self.dist_ubd ]                                               # selecting distribution for unit breakdown (typically bernouilli https://doi.org/10.1016/j.compchemeng.2019.106670) and setting params
+        self.dist_dd        = [self.dist_ddk, self.dist_ddd ]              # selecting distribution for due date (in DOI:10.1021/ie0007724 uniform is selected but, typically it seems to be poisson)  and setting params - here demand will 
 
         # allocating aggregation function for constraints
         if self.g_p_fn == 1: self.agg_fn, self.p_norm = np.linalg.norm, 1
@@ -188,8 +206,9 @@ class SingleStageParallelMaster(gym.Env):
         if self.g_p_fn == 3: self.agg_fn, self.p_norm = lambda x: sum(x.pow(2)), False
         if self.g_p_fn == 4: self.agg_fn, self.p_norm = lambda x: max(x) + 1/10 * np.log(sum(np.exp(10*(x - max(x))))) , False            # aggregate function as used in https://arxiv.org/pdf/2012.11790.pdf
         if self.g_p_fn not in [1,2,3,4]: raise ValueError('g_p_fn must be in [1,2,3, 4]')
-              
         
+        
+        self.I0  = [self.I_0[i] for i in range(self.N)]                                            # initial inventory of products    
         self.seed_int   = 0
         # input parameters
         try:
@@ -209,7 +228,7 @@ class SingleStageParallelMaster(gym.Env):
         # action space (orders available to schedule)
         m       = self.N
         u       = self.n_units
-        self.nx = m*2+2*u+1
+        self.nx = 2*m+2*u+1
         self.action_space = gym.spaces.Box(
             low=np.zeros(self.n_units), high=self.N, dtype=np.int16)
         # observation space (on-hand Inventory position at each echelon, which is any integer value)
@@ -326,7 +345,7 @@ class SingleStageParallelMaster(gym.Env):
         max_batch_e3            = [False, 210, 170, False, False, False, 390, False, False, False]          # listing max_batch_size of each product in unit 3
         max_batch_e4            = [False, False, False, False, 130, False, 290, 120, False, False]          # listing max_batch_size of each product in unit 4
         batch                   = [max_batch_e1, max_batch_e2, max_batch_e3, max_batch_e4]                  # collating all max_batch_size for dictionary generation 
-
+        
         return batch
 
     def set_cleaning_times(self):
@@ -334,8 +353,8 @@ class SingleStageParallelMaster(gym.Env):
 
         c_time_o1   = [False, False, False, False, False, 0.5, False, False, 1.0, 0.5]              # listing cleaning time between end of production of order 1 and next successor (index in list)
         c_time_o2   = [False, False, 1.0, False, False, False, False, False, False, False]          # listing cleaning time between end of production of order 2 and next successor (index in list)
-        c_time_o3   = [1.0, 0.5, False, False, False, False, 0.50, False, 1.5, False]             # listing cleaning time between end of production of order 3 and next successor (index in list)
-        c_time_o4   = [False, False, False, False, 0.5, False, False, False, False, 0.5]          # listing cleaning time between end of production of order 4 and next successor (index in list)
+        c_time_o3   = [1.0, 0.5, False, False, False, False, 0.50, False, 1.5, False]               # listing cleaning time between end of production of order 3 and next successor (index in list)
+        c_time_o4   = [False, False, False, False, 0.5, False, False, False, False, 0.5]            # listing cleaning time between end of production of order 4 and next successor (index in list)
         c_time_o5   = [False, False, False, 0.5, False, 0.5, 1.0, 0.5, False, False]                # listing cleaning time between end of production of order 5 and next successor (index in list)
         c_time_o6   = [1.5, False, 0.5, 0.5, False, False, False, False, 1.0, False]                # listing cleaning time between end of production of order 6 and next successor (index in list)
         c_time_o7   = [False, 2.0, False, False, 1.0, False, False, 0.5, False, False]              # listing cleaning time between end of production of order 7 and next successor (index in list)
@@ -364,36 +383,55 @@ class SingleStageParallelMaster(gym.Env):
         
     def _RESET(self):
         '''
-    	Reset environment after each episode
+        Create and initialize all variables and containers.
+        Nomenclature:
+            I = On hand inventory at the start of each period at each stage (except last one).
+            T = Pipeline inventory/i.e. that which is in production currently
+            R = Replenishment order placed at each period at each stage (except last one).
+            D = Customer demand at each period (at the retailer)
+            S = Sales performed at each period at each stage.
+            B = Backlog at each period at each stage.
+            LS = Lost sales at each period at each stage.
+            P = Total profit at each stage.
         '''
         periods = self.num_periods
         m       = self.N
         u       = self.n_units
         I0      = self.init_inv
-        order_list  = [value for value in self.order_size_dict.values()]
-        due_dates   = [value for value in self.due_date_dict.values()]
-        
+        order_list      = [value for value in self.order_size_dict.values()]
+        due_dates_nom   = [value for value in self.due_date_dict.values()]
+        if self.due_date_stochasticity: due_dates = [self.distributions[self.dist_dd[0]].rvs(**self.dist_dd[1][i]) for i in range(self.N)]
+        if not self.due_date_stochasticity: due_dates = [value for value in self.due_date_dict.values()]
+        self.due_date_ep = {order: due_dates[order] for order in range(self.N)}
+
         # simulation result lists
         self.I=np.zeros([periods+1, m])                     # inventory of each product at the beginning of each period
         self.T=np.zeros([periods+1, m])                     # pipeline inventory of each product at the beginning of each period
         self.D=np.zeros([periods+1, m])                     # outstanding demands size for each product
-        self.F=np.zeros([periods+1, m])                     # demand for product fulfilled when?
+        #self.F=np.zeros([periods+1, m])                     # demand for product fulfilled when?
         self.C=np.zeros([periods+1, m])                     # no of discrete time indices until order fulfilled.
         self.R=np.zeros([periods+1, m])                     # tardy or not? How many periods late are we?
         self.r_hist = np.zeros([periods+1])
         self.action_log     = np.zeros((periods+1, u))      # what operation is unit n performing (0-self.N-1 production, self.N idle)
         self.time_to_compl  = np.zeros((periods+1, u))      # how long until a given operation in a given unit is complete (in periods) - 0 means available now  
         self.time_processed = np.zeros((periods+1, u))      # time an operation has been processed for.
+        #self.state_hist     = np.zeros((periods+1,self.nx))
         self.outstanding_os = [i for i in range(m)]         # container to track outstanding operations
         self.most_recent_op = {}
+        self.batch_periods  = {unit: [] for unit in range(u)}
+        self.batch_sizes    = {unit: [] for unit in range(u)}
+        self.time_2_comp    = {unit: 0 for unit in range(u)}
+        self.op_in_unit     = {key: {} for key in range(u)}
         self.op_processing  = np.zeros((periods+1, u))      # container to track at what period an order was being processed in a given unit
+        self.campaign_size  = {unit: 0 for unit in range(u)}
+        self.comp_ops       = {}
         for unit in range(u):
             self.most_recent_op[unit] = [np.inf, 0]
         # initialization
         self.period         = 0                             # initialize time
         self.I[0,:]         = np.array(I0)                  # initial inventory
         self.D[0,:]         = np.array(order_list[:m])      # initial demands
-        self.C[0,:]         = np.array(due_dates[:m])       # time until due
+        self.C[0,:]         = np.array(due_dates_nom[:m])       # time until due
         
 
         # set state
@@ -408,8 +446,14 @@ class SingleStageParallelMaster(gym.Env):
         u = self.n_units
         t = self.period
         nx = self.nx
-   
+        bkdt = 1/np.array(self.breakdown_temp)
         state = np.zeros(nx)
+
+        # update time left in unit 
+        for key in self.time_2_comp.keys():
+            self.time_2_comp[key] -= 1
+
+
         # append inventory
         if t == 0:
             state[:m] = self.I0
@@ -422,19 +466,20 @@ class SingleStageParallelMaster(gym.Env):
             state[m:m+u] = self.action_log[t-1].flatten()
         # append time left in processing 
         if t == 0: 
-            state[m+u:m+2*u] = self.time_to_compl[t,:].flatten()
+            state[m+u:m+2*u] = np.array(list(self.time_2_comp.values())).flatten()
         if t > 0:
-            state[m+u:m+2*u] = self.time_to_compl[t,:].flatten()
-        # no of discrete time indices until order needs to be fulfilled.
-        if t == 0:
-            state[m+2*u:2*m+2*u] = self.C[0].flatten()
-        if t>0 :
-            state[m+2*u:2*m+2*u] = self.C[t].flatten()
+            state[m+u:m+2*u] = np.array(list(self.time_2_comp.values())).flatten()
+        # due date 
+        if t == 0: 
+            state[m+2*u:2*m+2*u] = self.C[t,:].flatten()
+        if t > 0:
+            state[m+2*u:2*m+2*u] = self.C[t,:].flatten()
 
         # append time index
         state[-1] = t
 
         self.state = state.copy()
+        #self.state_hist[t,:] = state.copy()
 
         return
     
@@ -442,7 +487,7 @@ class SingleStageParallelMaster(gym.Env):
         # function to calculate number of batches to run, given selection of new control. 
         n           = self.period
         n_units     = self.n_units
-        dist_dmd    = self.dist_dmd
+        
 
         if n > 0:
             control_log = self.action_log[n-1].copy()
@@ -460,6 +505,8 @@ class SingleStageParallelMaster(gym.Env):
             if control_log[i] == control[i]:
                 boolean_check[i] = False
 
+            assert control[i] in self.control_set[i], f'control selected (order {control[i]+1}) not compatible with schedule in unit {i+1}'
+
         # if new operation, checking order size, previous operation and processing time (which is cleaning time + processing time).
         c_length    = [False for _ in range(n_units)]                   # campaign length memory allocation 
         process_p   = [False for _ in range(n_units)]                   # operational time for new control decision 
@@ -469,12 +516,16 @@ class SingleStageParallelMaster(gym.Env):
             # determine campaign length
             if boolean_check[i] == True:
                 if control[i] < self.N:
-                    
-                    if self.stochasticity: oi_size  = self.distributions[dist_dmd[0]].rvs(**dist_dmd[1][control[i]])  # finding order size, based on case study drawing from order size distribution
-                    if not self.stochasticity: oi_size  = order_size[control[i]]                                                  # finding order size, based on case study 
-                    bs_size     = max_batch_size[i][control[i]]                                                                   # finding max_batch_size of order production in selected unit
+                    oi_size  = order_size[control[i]] - self.I[n, control[i]]                                                   # finding batch size to make, based on known demand and insted we can say that there is due date uncertainty. 
+                    if oi_size <= 0.:
+                        control[i] = self.N
+                        self.action_log[n,i] = control[i]
+                        self.time_to_compl[n,i]= 1                      # because of initialisation next index should automatically be 0.
+                        break
+                    bs_size  = max_batch_size[i][control[i]]                                                                    # finding max_batch_size of order production in selected unit
                     assert (oi_size != False) & (bs_size != False), f" illigitimate control decision (unit {i+1}, order {control[i+1]}) - Does order exist? {oi_size} / can unit process order? {bs_size} "
-                    c_length[i] = math.ceil(oi_size/bs_size)            # number of campaigns required to fullfil order
+                    c_length[i] = math.ceil(oi_size/bs_size)                                                                    # number of campaigns required to fullfil order
+                    #print('campagins check', f'order {control[i]+1} unit {i+1}', oi_size, order_size[control[i]], self.I[n, control[i]],  bs_size, c_length[i], oi_size/bs_size )
                     if n> 0:
                         _, process_p[i], p_t = self._operational_time_left(i, control[i], c_length[i], self.most_recent_op[i])   # finding number of periods to schedule for based on previous control and unit and order selection
                         
@@ -482,8 +533,11 @@ class SingleStageParallelMaster(gym.Env):
                         _, process_p[i], p_t = self._operational_time_left(i, control[i], c_length[i], [control_log[i], 0])   # finding number of periods to schedule for based on
 
                     self.new_ops[i] = control[i]
-                   
+                    self.op_in_unit[i][n] = control[i]
+                    self.batch_sizes[i] = {control[i]: [max_batch_size[i][control[i]] for j in self.batch_periods[i][control[i]][1:]] }            # allocating batch size 
 
+                    # make scheduling decision for remaining periods and pencil in countdown for future time periods.
+                    x = int(self.batch_periods[i][control[i]][-1] - n)
                     # make scheduling decision for remaining periods and pencil in countdown for future time periods.
                   
                     for j in range(process_p[i]):
@@ -494,7 +548,7 @@ class SingleStageParallelMaster(gym.Env):
                             if (process_p[i] - j) <= p_t: 
                                  self.op_processing[n+j, i] = 1 * (control[i] +1) 
                             else:
-                                self.op_processing[n+j, i] = -1 * (control[i] +1) 
+                                self.op_processing[n+j, i] = -1 * (control[i] +1)
                                    
 
                     # reset time processeed
@@ -503,7 +557,8 @@ class SingleStageParallelMaster(gym.Env):
                 elif control[i] == self.N:
                     
                     self.action_log[n,i] = control[i]
-                    self.time_to_compl[n,i]= 1                      # because of initialisation next index should automatically be 0.
+                    self.time_to_compl[n,i] = 1                      # because of initialisation next index should automatically be 0.
+                    self.time_2_comp[i] = 1
                    
 
             elif boolean_check[i] == False:
@@ -511,10 +566,10 @@ class SingleStageParallelMaster(gym.Env):
                 if control[i] == self.N:
                     self.action_log[n,i] = control[i]
                     self.time_to_compl[n,i]= 1                      # because of initialisation next index should automatically be 0.
+                    self.time_2_comp[i] = 1
                 else: 
                     pass 
                     
-
             # updating periods operation has been in processing (really a lazy way to do this) across all units
             if n < self.num_periods: self.time_processed[n+1, i] += 1 + self.time_processed[n, i]                       # index n+1 previously = 0
 
@@ -558,18 +613,30 @@ class SingleStageParallelMaster(gym.Env):
         
         # finding processing time 
         p_tb = process_time[unit_index][order_index]
-        p_t = campaigns * p_tb
-        # adding stochasticity 
-        if self.stochasticity: p_t += self.distributions[dist_pt[0]].rvs(*dist_pt[1][unit_index][order_index]) *self.dt
+        # calculating finishing time of each batch within the campaign 
+        ptplus = [0]
+        if self.processing_stochasticity: 
+            for i in range(campaigns):
+                ptplus.append(self.distributions[dist_pt[0]].rvs(*dist_pt[1][unit_index][order_index]) *self.dt) # adding stochasticity 
+        if not self.processing_stochasticity: 
+            for i in range(campaigns):
+                ptplus.append(0)
+        # start times of the campaigns (also the end times of the n-1 campaign)
+        prev_t_index = n + math.ceil(max(max(rto,c_t), rte)/self.dt)                # adding cleaning time and release times     
+        self.batch_periods[unit_index]= {order_index: [n]}
+        for i in range(campaigns):
+            prev_t_index += math.ceil((max(self.dt, p_tb+ptplus[i])/self.dt))
+            self.batch_periods[unit_index][order_index].append(prev_t_index)   
 
-       
+        # calculating entire time for processing of campaign
+        p_t             = (self.batch_periods[unit_index][order_index][-1] - self.batch_periods[unit_index][order_index][0])*self.dt   
+        lead_periods    = math.ceil(p_t/self.dt)
+        p_T             = campaigns * p_tb + math.ceil(max(max(rto,c_t), rte)) 
+        self.time_2_comp[unit_index] = p_T/self.dt
         
-        total_lead_time = p_t + max(max(rto,c_t), rte)                         
-        lead_periods    = math.ceil(total_lead_time/self.dt)
-
         
-
-        return [total_lead_time, lead_periods, lead_periods - math.ceil(max(max(rto,c_t), rte)/self.dt)]
+        
+        return [p_t, lead_periods, lead_periods - math.ceil(max(max(rto,c_t), rte)/self.dt)]
 
 
     def _check_terminal_operations(self):
@@ -578,6 +645,7 @@ class SingleStageParallelMaster(gym.Env):
         n_units         = self.n_units
         order_size      = self.order_size_dict
         max_batch_size  = self.batch_size_dict
+        batch_periods   = self.batch_periods
 
         if (n > 0) :
             
@@ -588,16 +656,17 @@ class SingleStageParallelMaster(gym.Env):
             for i in range(n_units):
                 # determine if unit operation is complete 
                 if int(time_to_complete_now[i]) == 0:
-                   
-                    completed_ops[i]    = control_log[i]
-                    
+                    completed_ops[i] = control_log[i]
+                    self.time_2_comp[i] =1
+                    #if control_log[i] ==4 : print(f'yes, control {control_log[i]} did finish in unit {i}')
                     
                     if control_log[i] < self.N:
                         self.most_recent_op[i] = [control_log[i], n]
                         try:
-                            self.outstanding_os.remove(int(control_log[i]))
+                            if control_log[i] in self.outstanding_os:
+                                self.outstanding_os.remove(int(control_log[i]))
                         except: 
-                            continue #print(f'WARNING: could not remove completed op {control_log[i]} from outstanding list {self.outstanding_os}')
+                            print(f'WARNING: could not remove completed op {control_log[i]} from outstanding list {self.outstanding_os}')
                 else: 
                     pass
         else:
@@ -614,51 +683,72 @@ class SingleStageParallelMaster(gym.Env):
         max_batch_size  = self.batch_size_dict
         n               = self.period 
         new_ops         = self.new_ops
-        due_dates       = self.due_date_dict
+        due_dates       = self.due_date_ep
+        batch_periods   = self.batch_periods
+        batch_sizes     = self.batch_sizes
+
 
         # transferring pipeline inventory to on-hand inventory
-        for key,value in order_completion.items():
-            if value < self.N: 
-                I[int(value)] += self.order_size_dict[int(value)] 
-                T[int(value)] -= self.order_size_dict[int(value)]
+        for unit, order_b in batch_periods.items():
+            if type(order_b) is dict: 
+                for order, date_comp in order_b.items(): 
+                    count = 0
+                    for date in date_comp[1:]:
+                        #print(n, date_comp[1:], I[int(order)],batch_sizes[unit][int(order)][count]   )
+                        if (date == n) & (order < self.N):
+                            #print(unit, order, date,n ,(date == n), date_comp)
+                            I[int(order)] += batch_sizes[unit][int(order)][count] 
+                            T[int(order)] -= batch_sizes[unit][int(order)][count] 
+                        count += 1
+
 
         # transferring new operations to pipeline inventory 
-        for key, value in new_ops.items():
-            if value < self.N: 
-                T[int(value)] += self.order_size_dict[int(value)]
+        for unit, order_b in batch_periods.items():
+            if type(order_b) is dict: 
+                for order, date_comp in order_b.items(): 
+                    count = 0
+                    n_d   = len(date_comp)
+                    for j in range(n_d -1):
+                        if (n>= date_comp[j]) & (n< date_comp[j+1]) & (order < self.N):
+                            T[int(order)] = batch_sizes[unit][int(order)][j]                            
 
         # shipping deliveries that are ready, otherwise incurring penalty and updating tardy order tracker
         for key, value in due_dates.items():
-            period_due = math.floor(value/self.dt)
-            if (period_due <= n) & (key <self.N):           # if order due 
-                if (I[int(key)] >= self.order_size_dict[int(key)]) & (D[int(key)] >= self.order_size_dict[int(key)]):   # check on-hand inventory can fulfill demand size
+            # updating time until orders are due
+            if (key < self.N):
+                    if key in self.outstanding_os: C[int(key)] -= self.dt 
+                    if key not in self.outstanding_os: C[int(key)] = max(0, C[int(key)] - self.dt)
+                    if (n* self.dt == value - self.notice_period*self.dt) or (C[int(key)] == 0): 
+                        C[int(key)] = value - n*self.dt 
+            if (math.floor(C[int(key)]/self.dt) <= int(0)) & (key <self.N):           # if order due 
+                if ((I[int(key)] >= self.order_size_dict[int(key)]) & (D[int(key)] >= self.order_size_dict[int(key)])):   # check on-hand inventory can fulfill demand size
+                    #print(f'True - order {key +1} shipped at time index {n}', (I[int(key)] >= self.order_size_dict[int(key)]), (D[int(key)] >= self.order_size_dict[int(key)]))
                     if self.shipping: I[int(key)] -= self.order_size_dict[int(key)]                                     # if we are shipping, remove mass from inventory
                     D[int(key)] -= self.order_size_dict[int(key)]                                                       # check off the demand
                     R[int(key)] = 0
-                elif (D[int(key)] == 0):                                                                                # check if demand has been fulfilled                                    
+                elif key not in self.outstanding_os:                                                                    # check if demand has been fulfilled                                    
                     R[int(key)] = 0
                 else:
                     R[int(key)] = self.tardy_cost                                                                       # otherwise assume we are late and denote demand lateness 
 
-            # updating time until orders are due
-            if (key < self.N):
-                 if key in self.outstanding_os: C[int(key)] -= self.dt
-                 if key not in self.outstanding_os: C[int(key)] = max(0, C[int(key)] - self.dt)
+            
+                 
 
 
         return I, T, D, C, R
 
     def _round2nearest(self, control):
 
-
         control_set = self.control_set
         control_set = list(control_set.values())
+        n_units     = self.n_units
+
   
         cs = []
-        for i in range(len(control_set)):
+        for i in range(n_units):
 
             try: 
-                t = state.squeeze()[i]
+                t = control.squeeze()[i]
                 x = min(control_set[i], key=lambda x:abs(x-t))
       
             except:
@@ -666,7 +756,8 @@ class SingleStageParallelMaster(gym.Env):
 
             cs.append(x)
 
-        return np.array(cs).reshape(1,-1)
+
+        return np.array(cs).squeeze().reshape(-1)
 
 
     def _dynamic_restrict_control(self, comp_ops):
@@ -727,7 +818,7 @@ class SingleStageParallelMaster(gym.Env):
         
         return controlset
 
-    def _schedule_maintenance(self, control_set):
+    def _schedule_maintenance(self, control_set, comp_ops, control):
         """ 
         implement maintenace period by clearing current operation and forcing unit to play
         maintenance
@@ -739,45 +830,64 @@ class SingleStageParallelMaster(gym.Env):
         controlset  = control_set
         deterbkd    = self.breakdown_temp
         n           = self.period
+        campaign_prog = self.batch_periods
         # assess unit breakdown
         
         for i in range(n_units):
 
-            if self.stochasticity:
-                if self.distributions[dist_ubd[0]].rvs(**dist_ubd[1][i]) == 1:
-                    controlset[i] = [self.N+1]                                                  # declaring maintenance period 
-                    mt            = math.ceil(m_t[i]/self.dt)
-                    indi          = np.where(self.time_to_compl[n:,i] > 0)[0] + n
-                    if indi.shape[0] >0:
-                        self.time_to_compl[indi,i] = np.zeros(len(indi))#.reshape(-1,1)
-                        self.op_processing[indi,i] = np.zeros(len(indi))#.reshape(-1,1)
-                    for j in range(mt):
-                        if n+j <= self.num_periods:
-                                self.action_log[n+j, i]     = int(self.N+1)                     # scheduling 
-                                self.time_to_compl[n+j,i]   = mt - j                            # estimating operational period (might be good practice, might not be.. )
-                                if (mt - j) <= math.ceil(m_t[i]/self.dt): 
-                                        self.op_processing[n+j, i] = 1 * (self.N+2) 
-                                else:
-                                    self.op_processing[n+j, i] = -1 * (self.N+2)
-            if not self.stochasticity:
-                if int(1/deterbkd[i]) == int(n):
-                    controlset[i] = [self.N+1]                                                  # declaring maintenance period 
-                    mt            = math.ceil(m_t[i]/self.dt)
-                    indi          = np.where(self.time_to_compl[n:,i] > 0)[0] + n
-                    if indi.shape[0] >0:
-                        self.time_to_compl[indi,i] = np.zeros(len(indi))#.reshape(-1,1)
-                        self.op_processing[indi,i] = np.zeros(len(indi))#.reshape(-1,1)
-                    for j in range(mt):
-                        if n+j <= self.num_periods:
-                                self.action_log[n+j, i]     = int(self.N+1)                     # scheduling 
-                                self.time_to_compl[n+j,i]   = mt - j                            # estimating operational period (might be good practice, might not be.. )
-                                if (mt - j) <= math.ceil(m_t[i]/self.dt): 
-                                        self.op_processing[n+j, i] = 1 * (self.N+2) 
-                                else:
-                                    self.op_processing[n+j, i] = -1 * (self.N+2)
+            if (i not in comp_ops.keys()) & (self.action_log[n,i] < self.N) :                    # if unit has not completed previous operation 
 
+                if self.maintenance_stochasticity:
+                    if self.distributions[dist_ubd[0]].rvs(**dist_ubd[1][i]) == 1:
+                        # declaring maintenance period 
+                        controlset[i] = [self.N+1]                                                  
+                        mt            = math.ceil(m_t[i]/self.dt)
+                        indi          = np.where(self.time_to_compl[n:,i] > 0)[0] + n
+                        # wiping markers for previously scheduled operations
+                        if indi.shape[0] >0:
+                            self.time_to_compl[indi,i] = np.zeros(len(indi))#.reshape(-1,1)
+                            self.time_2_comp[i]        = mt +1
+                            self.op_processing[indi,i] = np.zeros(len(indi))#.reshape(-1,1)
+                        # wiping pipeline inventory and markers for that unit
+                        self.batch_periods[i]   = []
+                        self.batch_sizes[i]     = []
+                        self.T[n,int(self.action_log[n,i])] = 0
+                        # allocating maintenance
+                        for j in range(mt):
+                            if n+j <= self.num_periods:
+                                    self.action_log[n+j, i]     = int(self.N+1)                     # scheduling 
+                                    self.time_to_compl[n+j,i]   = mt - j                            # estimating operational period (might be good practice, might not be.. )
+                                    if (mt - j) <= math.ceil(m_t[i]/self.dt): 
+                                            self.op_processing[n+j, i] = 1 * (self.N+2) 
+                                    else:
+                                        self.op_processing[n+j, i] = -1 * (self.N+2)
+                               
+                if not self.maintenance_stochasticity:
+                    if int(1/deterbkd[i]) == int(n):
+                        # declaring maintenance period 
+                        controlset[i] = [self.N+1]                                                  
+                        mt            = math.ceil(m_t[i]/self.dt)
+                        indi          = np.where(self.time_to_compl[n:,i] > 0)[0] + n
+                        # wiping markers for previously scheduled operations
+                        if indi.shape[0] >0:
+                            self.time_to_compl[indi,i] = np.zeros(len(indi))#.reshape(-1,1)
+                            self.op_processing[indi,i] = np.zeros(len(indi))#.reshape(-1,1)
+                            self.time_2_comp[i]        = mt +1
+                        # wiping pipeline inventory and markers for that unit
+                        self.batch_periods[i]   = []
+                        self.batch_sizes[i]     = []
+                        self.T[n,int(self.action_log[n,i])] = 0
+                        # allocating maintenance
+                        for j in range(mt):
+                            if n+j <= self.num_periods:
+                                    self.action_log[n+j, i]     = int(self.N+1)                     # scheduling 
+                                    self.time_to_compl[n+j,i]   = mt - j                            # estimating operational period (might be good practice, might not be.. )
+                                    if (mt - j) <= math.ceil(m_t[i]/self.dt): 
+                                            self.op_processing[n+j, i] = 1 * (self.N+2) 
+                                    else:
+                                        self.op_processing[n+j, i] = -1 * (self.N+2)
 
-            self.control_set = controlset
+                self.control_set = controlset
 
         return controlset
 
@@ -787,14 +897,27 @@ class SingleStageParallelMaster(gym.Env):
         """ 
 	    Checking state transition does not violate constraints (point wise)
 	    """
-        nx, ng = self.nx, self.ng
-        cf, nk = self.g, self.num_periods
-        term_chk = self.g_terminal
+        op_in_unit  = self.op_in_unit
+        n_units     = self.n_units 
+        nx, ng      = self.nx, self.ng
+        cf, nk      = self.g, self.num_periods
+        term_chk    = self.g_terminal
         
         # constraints are defined in terms of binary variables - finding count of each element in 
         controls  = list(u)
-        counts    = [None for _ in range(self.N)]
+        counts    = [0 for _ in range(self.N)]
         orders    = [i for i in range(self.N)]
+        '''
+        if self.control_penalty:
+            for i in orders:
+                counts[i] = controls.count(i)
+
+        if not self.control_penalty:
+            for unit in range(n_units):
+                d  = list(op_in_unit[unit].values())
+                for i in orders:
+                    counts[i] += d.count(i)
+        '''
 
         for i in orders:
             counts[i] = controls.count(i)
@@ -851,6 +974,7 @@ class SingleStageParallelMaster(gym.Env):
 
         # round control input determininstically to nearest allowable control
         if self.round2nearest: control = self._round2nearest(control) 
+        #print('control', control)
         
         # update schedule based on current control decision 
         self._update_control_schedule(control)
@@ -861,6 +985,7 @@ class SingleStageParallelMaster(gym.Env):
 
         # determine those operations with have finished
         comp_ops = self._check_terminal_operations()
+        self.comp_ops = comp_ops
         
         # update inventory (on-hand and pipeline), ship and check if order is late
         I, T, D, C, R = self._update_transition_(I, T, D, C, R, comp_ops)
@@ -876,7 +1001,7 @@ class SingleStageParallelMaster(gym.Env):
         if self.dynamic_restrict_control: controlset = self._dynamic_restrict_control(comp_ops)
         if not self.dynamic_restrict_control: controlset = {} 
 
-        if self.maintenance: controlset  = self._schedule_maintenance(controlset)
+        if self.maintenance: controlset  = self._schedule_maintenance(controlset, comp_ops, control)
 
         # update state
         self._update_state()
@@ -933,9 +1058,8 @@ class SingleStageParallelMaster(gym.Env):
         units   = [i for i in range(self.n_units)] 
         op_pro  = self.op_processing
         control = self.action_log
-
-
-
+        n_t, uni = control.shape
+        control[n:,:] = np.array([-5]*(n_t-n)*uni).reshape(n_t-n, uni)
         schedule = {unit: [] for unit in units}
         
         for unit in units:
@@ -943,24 +1067,27 @@ class SingleStageParallelMaster(gym.Env):
             x_  = control[0,unit]
             j   = 0
             gby = self.runs_of_ones_list(unit)
-
+            print('time index pre' ,gby)
             gby = [item for item in gby if item > 0]
-
+            print('time index post', gby)
             for i in range(n+1):
                 x = control[i, unit]
+                
                 if (x != x_) & (x_!=self.N):
                     
                     try: schedule[unit].append([x_+1, i-(gby[j])/(x_+1), i])
                     except: print('please check schedule for ', unit, 'there may be error in schedule figure generation:', 
                                   'plotted schedule', schedule, 'controls taken', control[unit], 'op_processing', self.op_processing, 'time index', i)
                     j +=1
+                if j >= len(gby):
+                    break
                 x_ = x.copy()
 
         schedule = {unit: np.array(schedule[unit]) for unit in units}
             
-
+ 
        
-
+       
         plt.figure(figsize=(12,6))
         colork = [(rnd.random(), rnd.random(), rnd.random()) for i in range(self.N+2)] 
         gap = 20/5000000000
@@ -994,8 +1121,9 @@ class SingleStageParallelMaster(gym.Env):
         plt.gca().set_yticklabels(lbls);
         plt.xlabel('Discrete Time Index')
         plt.savefig(path+'.svg')
-        plt.show()
-        # check lateness
+        plt.close()
+        
+           
 
         R = self.R
 
