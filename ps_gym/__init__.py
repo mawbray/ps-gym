@@ -11,11 +11,8 @@ register(id='SingleStageParallel-v1',
 	entry_point='ps_gym.envs.singlestageparallel:SingleStageParallelSO1'
 )
 
-# Bin Packing Environments
+register(id='SingleStageParallel-v2',
+	entry_point='ps_gym.envs.singlestageparallel_large:SingleStageParallelLMaster'
+)
 
-# Newsvendor Envs
 
-
-# Virtual Machine Packing Envs
-
-# Inventory Management Envs
