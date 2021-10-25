@@ -1082,9 +1082,9 @@ class SingleStageParallelLMaster(gym.Env):
 
             x_  = control[0,unit]
             j   = 0
-            gby = self.runs_of_ones_list(unit)
+            #gby = self.runs_of_ones_list(unit)
             print('time index pre' ,gby)
-            gby = [item for item in gby if item > 0]
+            #gby = [item for item in gby if item > 0]
             print('time index post', gby)
             for i in range(n+1):
                 x = control[i, unit]
