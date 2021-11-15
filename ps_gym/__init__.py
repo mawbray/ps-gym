@@ -15,4 +15,7 @@ register(id='SingleStageParallel-v2',
 	entry_point='ps_gym.envs.singlestageparallel_large:SingleStageParallelLMaster'
 )
 
+register(id='SingleStageParallel-v3',
+	entry_point='ps_gym.envs.singlestageparallel_largestateexp:SingleStageParallelLStateExp'
+)
 
