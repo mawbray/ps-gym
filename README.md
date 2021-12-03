@@ -15,6 +15,6 @@ cd ps-gym
 pip install -e.
 ```
 
-Will enable pip install in future
+
 
 
